@@ -48,12 +48,10 @@ class LLMClient:
     """
 
     def __init__(self, default_model: Optional[str] = None):
-        self.default_model = default_model or self._resolve_default_model()
-
-    def _resolve_default_model(self) -> str:
-        if settings.llm_provider == "anthropic":
-            return "claude-sonnet-5"
-        return "gpt-4o-mini"
+        # Explicit arg > LLM_MODEL env var (via settings) > hardcoded fallback.
+        # This is the dev/prod switch: set LLM_MODEL=deepseek/deepseek-chat
+        # locally, LLM_MODEL=claude-sonnet-5 in production — no code change.
+        self.default_model = default_model or settings.llm_model
 
     async def call(
         self,
