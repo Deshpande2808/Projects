@@ -18,6 +18,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Maps graph node names to WorkflowStatus — not a 1:1 string match
+# (e.g. node "decomposition" -> status DECOMPOSED), so it's an explicit table.
+_NODE_TO_STATUS = {
+    "understanding": WorkflowStatus.UNDERSTANDING,
+    "decomposition": WorkflowStatus.DECOMPOSED,
+    "routing": WorkflowStatus.ROUTING,
+    "aggregation": WorkflowStatus.AGGREGATING,
+    "draft_generation": WorkflowStatus.GENERATING_DRAFT,
+    "approval_gate": WorkflowStatus.AWAITING_APPROVAL,
+    "execution_actions": WorkflowStatus.EXECUTING_SUBTASKS,
+}
+
 
 class EmailWorkflowGraph:
     """
@@ -121,7 +133,8 @@ class EmailWorkflowGraph:
                 logger.info(f"→ Entering node: {node_name}")
 
                 # Update status
-                state.status = WorkflowStatus(node_name.replace("_", "_"))
+                if node_name in _NODE_TO_STATUS:
+                    state.status = _NODE_TO_STATUS[node_name]
 
                 # Call the actual node
                 result_state = await node_fn(state)
