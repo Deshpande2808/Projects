@@ -245,10 +245,11 @@ async def placeholder_execution_node(state: WorkflowState) -> WorkflowState:
 
 def create_workflow_graph() -> StateGraph:
     """
-    Factory function to create a complete workflow graph.
+    Factory function to create a workflow graph using placeholder nodes.
 
-    Uses placeholder nodes for Phase 1.
-    In Phase 2+, this will be replaced with actual agent nodes.
+    Useful for testing orchestration mechanics (state flow, checkpointing,
+    approval routing) without incurring LLM cost. For the real pipeline,
+    use create_workflow_graph_with_agents().
 
     Returns:
         Compiled LangGraph StateGraph ready to execute
@@ -261,6 +262,136 @@ def create_workflow_graph() -> StateGraph:
         draft_node=placeholder_draft_node,
         approval_gate_node=placeholder_approval_gate_node,
         execution_node=placeholder_execution_node,
+    )
+
+    return orchestrator.compile()
+
+
+# ============================================================================
+# REAL NODE IMPLEMENTATIONS (Phase 2 — backed by actual agents)
+# ============================================================================
+#
+# Routing here is intentionally simple (not the Phase 3 tag/semantic router):
+# for each subtask, run every worker agent whose capability_tags overlap
+# the subtask's required_capabilities. Phase 3 replaces this with
+# src/routing/tag_router.py + semantic_router.py without touching these
+# node functions' call sites in the graph.
+
+def _make_understanding_node(agent) -> Callable:
+    async def node(state: WorkflowState) -> WorkflowState:
+        input_data = {"email_subject": state.email_subject, "email_body": state.email_body}
+        output = await agent.run(input_data)
+        state.understanding = {k: v for k, v in output.items() if not k.startswith("_")}
+        state.add_node_log(
+            "understanding", input_data, output,
+            latency_ms=output.get("_latency_ms", 0), cost_usd=output.get("_cost_usd", 0),
+        )
+        return state
+    return node
+
+
+def _make_decomposition_node(agent) -> Callable:
+    async def node(state: WorkflowState) -> WorkflowState:
+        input_data = {"understanding": state.understanding}
+        output = await agent.run(input_data)
+        state.subtasks = output["subtasks"]
+        state.add_node_log(
+            "decomposition", input_data, output,
+            latency_ms=output.get("_latency_ms", 0), cost_usd=output.get("_cost_usd", 0),
+        )
+        return state
+    return node
+
+
+def _make_router_node(worker_agents: list) -> Callable:
+    """
+    worker_agents: list of agent instances (e.g. [database_agent, document_agent]),
+    each with .capability_tags. For each subtask, runs every agent whose tags
+    overlap the subtask's required_capabilities.
+    """
+    async def node(state: WorkflowState) -> WorkflowState:
+        for subtask in state.subtasks:
+            required = set(subtask.get("required_capabilities", []))
+            for agent in worker_agents:
+                if required & set(agent.capability_tags):
+                    result = await agent.run({"description": subtask["description"]})
+                    state.agent_assignments[subtask["id"]] = agent.name
+                    state.agent_results[agent.name] = {
+                        k: v for k, v in result.items() if not k.startswith("_")
+                    }
+                    state.add_node_log(
+                        f"routing:{agent.name}", subtask, result,
+                        latency_ms=result.get("_latency_ms", 0), cost_usd=result.get("_cost_usd", 0),
+                    )
+        return state
+    return node
+
+
+def _make_aggregation_node(agent) -> Callable:
+    async def node(state: WorkflowState) -> WorkflowState:
+        input_data = {"understanding": state.understanding, "agent_results": state.agent_results}
+        output = await agent.run(input_data)
+        state.aggregated_findings = {k: v for k, v in output.items() if not k.startswith("_")}
+        state.add_node_log(
+            "aggregation", input_data, output,
+            latency_ms=output.get("_latency_ms", 0), cost_usd=output.get("_cost_usd", 0),
+        )
+        return state
+    return node
+
+
+def _make_draft_node(agent) -> Callable:
+    async def node(state: WorkflowState) -> WorkflowState:
+        input_data = {
+            "email_subject": state.email_subject,
+            "email_body": state.email_body,
+            "aggregated_findings": state.aggregated_findings,
+        }
+        output = await agent.run(input_data)
+        state.draft = {k: v for k, v in output.items() if not k.startswith("_")}
+        state.add_node_log(
+            "draft_generation", input_data, output,
+            latency_ms=output.get("_latency_ms", 0), cost_usd=output.get("_cost_usd", 0),
+        )
+        return state
+    return node
+
+
+def create_workflow_graph_with_agents(tool_registry, llm_client=None) -> StateGraph:
+    """
+    Factory function to create the real workflow graph, backed by actual agents.
+
+    Args:
+        tool_registry: ToolRegistry with tools registered (e.g. from create_tool_registry())
+        llm_client: Optional shared LLMClient; defaults to get_llm_client() per agent
+
+    Returns:
+        Compiled LangGraph StateGraph ready to execute against a real email
+    """
+    from src.agents import (
+        UnderstandingAgent,
+        DecompositionAgent,
+        DatabaseAgent,
+        DocumentAgent,
+        AggregationAgent,
+        DraftAgent,
+    )
+
+    understanding_agent = UnderstandingAgent(llm_client)
+    decomposition_agent = DecompositionAgent(llm_client)
+    database_agent = DatabaseAgent(tool_registry, llm_client)
+    document_agent = DocumentAgent(tool_registry, llm_client)
+    aggregation_agent = AggregationAgent(llm_client)
+    draft_agent = DraftAgent(llm_client)
+
+    orchestrator = EmailWorkflowGraph(
+        understanding_node=_make_understanding_node(understanding_agent),
+        decomposition_node=_make_decomposition_node(decomposition_agent),
+        router_node=_make_router_node([database_agent, document_agent]),
+        aggregation_node=_make_aggregation_node(aggregation_agent),
+        draft_node=_make_draft_node(draft_agent),
+        approval_gate_node=placeholder_approval_gate_node,  # real approval gate arrives in Phase 5
+        execution_node=placeholder_execution_node,  # real execution arrives in Phase 5
     )
 
     return orchestrator.compile()
