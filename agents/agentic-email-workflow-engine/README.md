@@ -15,7 +15,7 @@ Support teams, sales ops, billing, and product teams are drowning in email. Each
 
 ### Project Goals
 Build an **end-to-end agentic workflow engine** that:
-1. **Ingests emails** on a schedule (IMAP poll, webhook, etc.)
+1. **Takes a user-selected email** on demand — the user picks one email they want handled and triggers the agent; there is no background polling or auto-processing of every inbox message
 2. **Understands** each email: intent, entities, required actions, urgency
 3. **Decomposes** into tasks and routes to specialized sub-agents
 4. **Orchestrates** parallel/sequential execution: agents call tools (Postgres, SharePoint, Slack, REST APIs, etc.)
@@ -49,8 +49,8 @@ This project goes **far beyond prompt writing** into production-grade AI systems
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                    EMAIL INGESTION                                │
-│            (IMAP Scheduler / Webhook / Manual)                   │
+│                 USER-TRIGGERED EMAIL INPUT                        │
+│      (user selects one email → POST /workflows → run once)       │
 └────────────────────────┬─────────────────────────────────────────┘
                          │
         ┌────────────────▼────────────────┐
